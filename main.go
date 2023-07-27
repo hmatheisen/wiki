@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -63,7 +65,7 @@ func buildWiki(dir string) error {
 
 			err := md2html(path)
 			if err != nil {
-				log.Println(err.Error())
+				log.Printf("Could not parse file %v\n", err)
 			}
 		}(path)
 
@@ -80,22 +82,97 @@ func buildWiki(dir string) error {
 	return nil
 }
 
+func fileWatcher(dir string) error {
+	fileChanged := make(chan string)
+
+	walkFunc := func(path string, d fs.DirEntry, err error) error {
+		if d.IsDir() {
+			return nil
+		}
+
+		go func(path string) {
+			initialStat, err := os.Stat(path)
+			if err != nil {
+				// FIXME
+				log.Println(err)
+			}
+
+			for {
+				time.Sleep(time.Second)
+
+				stat, err := os.Stat(path)
+				if err != nil {
+					// FIXME
+					log.Println(err)
+				}
+
+				if stat.Size() != initialStat.Size() ||
+					stat.ModTime() != initialStat.ModTime() {
+					fileChanged <- path
+					initialStat = stat
+				}
+			}
+		}(path)
+
+		return nil
+	}
+
+	filepath.WalkDir(dir, walkFunc)
+
+	go func() {
+		for {
+			path := <- fileChanged
+
+			log.Println("Recompiling   ", path)
+
+			err := md2html(path)
+			if err != nil {
+				// FIXME
+				log.Println(err)
+			}
+		}
+	}()
+
+	return nil
+}
+
 func main() {
+	dir := os.Args[1]
+
 	_, err := exec.LookPath(md)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = buildWiki(os.Args[1])
+	err = buildWiki(dir)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	log.Println("wiki built!")
-	log.Println("Starting server on :1234")
 
-	err = http.ListenAndServe(":1234", http.FileServer(http.Dir(wikiDir)))
-	if err != nil {
-		log.Fatal(err)
-	}
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+
+	go func() {
+		log.Println("Starting server on :1234")
+
+		err = http.ListenAndServe(":1234", http.FileServer(http.Dir(wikiDir)))
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	go func() {
+		log.Println("Starting file watcher")
+
+		err = fileWatcher(dir)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	// Block here until Interrupt is received
+	<-c
+	log.Println("Exiting")
 }
