@@ -15,11 +15,10 @@ import (
 )
 
 const (
-	wikiDir = "wikiFiles"
-	md      = "md2html"
+	md = "md2html"
 )
 
-func md2html(path string) error {
+func md2html(path, wikiDir string) error {
 	bytes, err := exec.Command(md, "--github", path).Output()
 	if err != nil {
 		return err
@@ -46,7 +45,7 @@ func md2html(path string) error {
 	return nil
 }
 
-func buildWiki(dir string) error {
+func buildWiki(srcDir, wikiDir string) error {
 	var wg sync.WaitGroup
 
 	walkFunc := func(path string, _ fs.DirEntry, err error) error {
@@ -63,16 +62,16 @@ func buildWiki(dir string) error {
 		go func(path string) {
 			defer wg.Done()
 
-			err := md2html(path)
+			err := md2html(path, wikiDir)
 			if err != nil {
-				log.Printf("Could not parse file %v\n", err)
+				log.Println("Could not parse file", err)
 			}
 		}(path)
 
 		return nil
 	}
 
-	err := filepath.WalkDir(dir, walkFunc)
+	err := filepath.WalkDir(srcDir, walkFunc)
 	if err != nil {
 		return err
 	}
@@ -82,19 +81,20 @@ func buildWiki(dir string) error {
 	return nil
 }
 
-func fileWatcher(dir string) error {
-	fileChanged := make(chan string)
-
+func fileWatcher(srcDir string, fileChanged chan<- string) error {
 	walkFunc := func(path string, d fs.DirEntry, err error) error {
-		if d.IsDir() {
+		if err != nil {
+			return err
+		}
+
+		if filepath.Ext(path) != ".md" {
 			return nil
 		}
 
 		go func(path string) {
 			initialStat, err := os.Stat(path)
 			if err != nil {
-				// FIXME
-				log.Println(err)
+				log.Println("Could not get initial file info", err)
 			}
 
 			for {
@@ -102,12 +102,10 @@ func fileWatcher(dir string) error {
 
 				stat, err := os.Stat(path)
 				if err != nil {
-					// FIXME
-					log.Println(err)
+					log.Println("Could not get file info", err)
 				}
 
-				if stat.Size() != initialStat.Size() ||
-					stat.ModTime() != initialStat.ModTime() {
+				if stat.Size() != initialStat.Size() || stat.ModTime() != initialStat.ModTime() {
 					fileChanged <- path
 					initialStat = stat
 				}
@@ -117,34 +115,31 @@ func fileWatcher(dir string) error {
 		return nil
 	}
 
-	filepath.WalkDir(dir, walkFunc)
-
-	go func() {
-		for {
-			path := <- fileChanged
-
-			log.Println("Recompiling   ", path)
-
-			err := md2html(path)
-			if err != nil {
-				// FIXME
-				log.Println(err)
-			}
-		}
-	}()
+	filepath.WalkDir(srcDir, walkFunc)
 
 	return nil
 }
 
 func main() {
-	dir := os.Args[1]
+	var srcDir string
+	if len(os.Args) == 2 {
+		srcDir = os.Args[1]
+	} else {
+		srcDir = "."
+	}
 
 	_, err := exec.LookPath(md)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = buildWiki(dir)
+	wikiDir, err := os.MkdirTemp("", srcDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.RemoveAll(wikiDir)
+
+	err = buildWiki(srcDir, wikiDir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -163,12 +158,27 @@ func main() {
 		}
 	}()
 
+	fileChanged := make(chan string)
+
 	go func() {
 		log.Println("Starting file watcher")
 
-		err = fileWatcher(dir)
+		err = fileWatcher(srcDir, fileChanged)
 		if err != nil {
 			log.Fatal(err)
+		}
+	}()
+
+	go func() {
+		for {
+			path := <-fileChanged
+
+			log.Println("Recompiling ", path)
+
+			err := md2html(path, wikiDir)
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
 	}()
 
