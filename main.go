@@ -1,7 +1,9 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
+	"html/template"
 	"io/fs"
 	"net/http"
 	"os"
@@ -13,12 +15,13 @@ import (
 	"time"
 )
 
-const (
-	md = "md2html"
-)
+const md = "md2html"
 
 var (
-	srcDir = "."
+	//go:embed template.html
+	htmlTemplate string
+	srcDir       = "."
+	tpl          *template.Template
 )
 
 func md2html(path, wikiDir string) error {
@@ -40,7 +43,17 @@ func md2html(path, wikiDir string) error {
 	withHTML := fmt.Sprintf("%s.html", withoutExt)
 	withDir := filepath.Join(wikiDir, withHTML)
 
-	err = os.WriteFile(withDir, bytes, 0644)
+	file, err := os.Create(withDir)
+	if err != nil {
+		return err
+	}
+
+	data := struct {
+		Title   string
+		Content template.HTML
+	}{Title: withoutExt, Content: template.HTML(bytes)}
+
+	err = tpl.Execute(file, data)
 	if err != nil {
 		return err
 	}
@@ -67,7 +80,7 @@ func buildWiki(srcDir, wikiDir string) error {
 
 			err := md2html(path, wikiDir)
 			if err != nil {
-				fmt.Println("Could not parse file", err)
+				fmt.Fprintf(os.Stderr, "wiki: could not compile file: %v", err)
 			}
 		}(path)
 
@@ -97,7 +110,7 @@ func fileWatcher(srcDir string, fileChanged chan<- string) error {
 		go func(path string) {
 			initialStat, err := os.Stat(path)
 			if err != nil {
-				fmt.Println("Could not get initial file info", err)
+				fmt.Fprintf(os.Stderr, "wiki: could not get file info: %v", err)
 			}
 
 			for {
@@ -105,7 +118,7 @@ func fileWatcher(srcDir string, fileChanged chan<- string) error {
 
 				stat, err := os.Stat(path)
 				if err != nil {
-					fmt.Println("Could not get file info", err)
+					fmt.Fprintf(os.Stderr, "wiki: could not get file info: %v", err)
 				}
 
 				if stat.Size() != initialStat.Size() || stat.ModTime() != initialStat.ModTime() {
@@ -131,19 +144,26 @@ func init() {
 		srcDir = os.Args[1]
 
 		if _, err := os.Stat(srcDir); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Dir %s does not exists\n", srcDir)
+			fmt.Fprintf(os.Stderr, "wiki: dir %s does not exists\n", srcDir)
 			os.Exit(2)
 		}
 	}
 
-	_, err := exec.LookPath(md)
-	if err != nil {
-		fmt.Println(err)
+	if _, err := exec.LookPath(md); err != nil {
+		fmt.Fprintf(os.Stderr, "wiki: %v\n", err)
 		os.Exit(1)
 	}
+
+	t, err := template.New("markdown").Parse(htmlTemplate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wiki: %v\n", err)
+		os.Exit(1)
+	}
+
+	tpl = t
 }
 
-func launch(wikiDir string) {
+func launchComponents(wikiDir string) {
 	// Launch file server
 	go func() {
 		fmt.Println("Starting server on :1234")
@@ -157,7 +177,7 @@ func launch(wikiDir string) {
 
 	fileChanged := make(chan string)
 
-	// Launch file fatcher
+	// Launch file watcher
 	go func() {
 		fmt.Println("Starting file watcher")
 
@@ -187,14 +207,14 @@ func launch(wikiDir string) {
 func main() {
 	wikiDir, err := os.MkdirTemp("", srcDir)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Fprintf(os.Stderr, "wiki: could not create temporary dir: %v\n", err)
 		os.Exit(1)
 	}
 	defer os.RemoveAll(wikiDir)
 
 	err = buildWiki(srcDir, wikiDir)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Fprintf(os.Stderr, "wiki: could not build wiki: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -203,7 +223,7 @@ func main() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 
-	launch(wikiDir)
+	launchComponents(wikiDir)
 
 	// Block here until Interrupt is received
 	<-c
