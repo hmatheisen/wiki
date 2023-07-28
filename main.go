@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io/fs"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +15,10 @@ import (
 
 const (
 	md = "md2html"
+)
+
+var (
+	srcDir = "."
 )
 
 func md2html(path, wikiDir string) error {
@@ -64,7 +67,7 @@ func buildWiki(srcDir, wikiDir string) error {
 
 			err := md2html(path, wikiDir)
 			if err != nil {
-				log.Println("Could not parse file", err)
+				fmt.Println("Could not parse file", err)
 			}
 		}(path)
 
@@ -94,7 +97,7 @@ func fileWatcher(srcDir string, fileChanged chan<- string) error {
 		go func(path string) {
 			initialStat, err := os.Stat(path)
 			if err != nil {
-				log.Println("Could not get initial file info", err)
+				fmt.Println("Could not get initial file info", err)
 			}
 
 			for {
@@ -102,7 +105,7 @@ func fileWatcher(srcDir string, fileChanged chan<- string) error {
 
 				stat, err := os.Stat(path)
 				if err != nil {
-					log.Println("Could not get file info", err)
+					fmt.Println("Could not get file info", err)
 				}
 
 				if stat.Size() != initialStat.Size() || stat.ModTime() != initialStat.ModTime() {
@@ -115,74 +118,95 @@ func fileWatcher(srcDir string, fileChanged chan<- string) error {
 		return nil
 	}
 
-	filepath.WalkDir(srcDir, walkFunc)
+	err := filepath.WalkDir(srcDir, walkFunc)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
 
-func main() {
-	var srcDir string
+func init() {
 	if len(os.Args) == 2 {
 		srcDir = os.Args[1]
-	} else {
-		srcDir = "."
+
+		if _, err := os.Stat(srcDir); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Dir %s does not exists\n", srcDir)
+			os.Exit(2)
+		}
 	}
 
 	_, err := exec.LookPath(md)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println(err)
+		os.Exit(1)
 	}
+}
 
-	wikiDir, err := os.MkdirTemp("", srcDir)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer os.RemoveAll(wikiDir)
-
-	err = buildWiki(srcDir, wikiDir)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Println("wiki built!")
-
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-
+func launch(wikiDir string) {
+	// Launch file server
 	go func() {
-		log.Println("Starting server on :1234")
+		fmt.Println("Starting server on :1234")
 
-		err = http.ListenAndServe(":1234", http.FileServer(http.Dir(wikiDir)))
+		err := http.ListenAndServe(":1234", http.FileServer(http.Dir(wikiDir)))
 		if err != nil {
-			log.Fatal(err)
+			fmt.Println(err)
+			os.Exit(1)
 		}
 	}()
 
 	fileChanged := make(chan string)
 
+	// Launch file fatcher
 	go func() {
-		log.Println("Starting file watcher")
+		fmt.Println("Starting file watcher")
 
-		err = fileWatcher(srcDir, fileChanged)
+		err := fileWatcher(srcDir, fileChanged)
 		if err != nil {
-			log.Fatal(err)
+			fmt.Println(err)
+			os.Exit(1)
 		}
 	}()
 
+	// Poll for events: recompile if file changed
 	go func() {
 		for {
 			path := <-fileChanged
 
-			log.Println("Recompiling ", path)
+			fmt.Println("Recompiling ", path)
 
 			err := md2html(path, wikiDir)
 			if err != nil {
-				log.Fatal(err)
+				fmt.Println(err)
+				os.Exit(1)
 			}
 		}
 	}()
+}
+
+func main() {
+	wikiDir, err := os.MkdirTemp("", srcDir)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(wikiDir)
+
+	err = buildWiki(srcDir, wikiDir)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	fmt.Println("wiki built!")
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+
+	launch(wikiDir)
 
 	// Block here until Interrupt is received
 	<-c
-	log.Println("Exiting")
+	fmt.Println()
+	fmt.Println("Exiting")
 }
