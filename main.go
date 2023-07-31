@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 type TemplateData struct {
@@ -59,7 +61,7 @@ func md2html(path string) error {
 	defer file.Close()
 
 	data := TemplateData{
-		Title:   strings.Title(filepath.Base(withoutExt)),
+		Title:   cases.Title(language.English).String(filepath.Base(withoutExt)),
 		Content: template.HTML(bytes),
 	}
 	// Write HTML content into file
@@ -102,11 +104,7 @@ func buildWiki() error {
 	}
 
 	// Wait for all files to build
-	if err := g.Wait(); err != nil {
-		return err
-	}
-
-	return nil
+	return g.Wait()
 }
 
 func fileWatcher(path string, fileChanged chan<- string) {
@@ -240,8 +238,7 @@ func run() error {
 func main() {
 	flag.Parse()
 
-	err := run()
-	if err != nil {
+	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "wiki: %v\n", err)
 		os.Exit(1)
 	}
