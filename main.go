@@ -8,23 +8,24 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/gomarkdown/markdown"
+	"github.com/gomarkdown/markdown/html"
+	"github.com/gomarkdown/markdown/parser"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
 
+// TemplateData contains the data for the template
 type TemplateData struct {
 	Title   string
 	Content template.HTML
 }
-
-const markdownCmd = "md2html"
 
 var (
 	//go:embed template.html
@@ -35,11 +36,23 @@ var (
 )
 
 func md2html(path string) error {
-	// Compile markdown to html
-	bytes, err := exec.Command(markdownCmd, "--github", path).Output()
+	contents, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
+
+	// Create markdown parser with extensions
+	extensions := parser.CommonExtensions | parser.AutoHeadingIDs | parser.NoEmptyLineBeforeBlock
+	p := parser.NewWithExtensions(extensions)
+	doc := p.Parse(contents)
+
+	// create HTML renderer with extensions
+	htmlFlags := html.CommonFlags | html.HrefTargetBlank
+	opts := html.RendererOptions{Flags: htmlFlags}
+	renderer := html.NewRenderer(opts)
+
+	// Compile markdown to html
+	bytes := markdown.Render(doc, renderer)
 
 	// Create folder if needed
 	dirPath := filepath.Dir(filepath.Join(wikiDir, path))
@@ -194,11 +207,6 @@ func serveAndWatchFiles() {
 }
 
 func run() error {
-	// Check for markdown executable
-	if _, err := exec.LookPath(markdownCmd); err != nil {
-		return err
-	}
-
 	// Create temporary dir
 	tempDir, err := os.MkdirTemp("", *srcDir)
 	if err != nil {
